@@ -260,10 +260,11 @@ function seed(){return{
   mine:['g1'],current:'g1'
 }}
 
-const KEY='bylt-v2';
+const KEY='bylt-v3';
 let S;
 try{S=JSON.parse(localStorage.getItem(KEY))}catch(e){}
 if(!S||!S.groups)S=seed();
+if(!S.uid)S.uid=Math.random().toString(36).slice(2,8);
 const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}};
 const ui={tab:'square',q:'',pace:'全部',sort:'match',inb:false};
 
@@ -286,7 +287,7 @@ function reason(m){return (m.bs===1?'<span class="chip good">预算在区间内<
 
 function ensureTrip(g){
   const ex=S.trips[g.id];
-  if(ex){ex.confirms=ex.confirms||{};if(ex.plan===undefined)ex.plan=null;return ex}
+  if(ex){ex.confirms=ex.confirms||{};if(ex.plan===undefined)ex.plan=null;ex.items.forEach(i=>{if(!i.dest)i.dest=g.code});return ex}
   const mem={};g.members.forEach(n=>{if(n===ME)return;const h=hash(n);mem[n]={budget:Math.round(((g.bmin+g.bmax)/2+((h%5)-2)*200)/100)*100,avail:[clamp(g.start-h%3,0,NDAYS-1),clamp(g.end+h%4,0,NDAYS-1)]}});
   return S.trips[g.id]={mem,cands:[g.code],votes:{[g.owner]:g.code},plan:null,confirms:{},pick:null,items:[],exp:[]};
 }
@@ -306,11 +307,11 @@ function tally(t){
   const max=Math.max(0,...Object.values(vc));
   return {vc,max,leaders:max>0?t.cands.filter(k=>vc[k]===max):[]};
 }
-const inPlan=(g,i)=>i.day<=daysOf(g);
+const inPlan=(g,i)=>i.day<=daysOf(g)&&(!i.dest||i.dest===g.code);
 function personCost(g,t,m){let c=0;t.items.forEach(i=>{if(!inPlan(g,i))return;if(!i.opt||(i.who||[]).includes(m))c+=+i.cost});return c}
 function costs(g,t){let base=0,opt=0;t.items.forEach(i=>{if(!inPlan(g,i))return;i.opt?opt+=+i.cost:base+=+i.cost});return{base,opt}}
 function planSig(g,t){return JSON.stringify([g.code,g.start,g.end,t.items.filter(i=>inPlan(g,i)).map(i=>[i.id,i.day,+i.cost,!!i.opt,i.title])])}
-function confStatus(g,t,m){const c=t.confirms[m];return !c?'pending':c===planSig(g,t)?'ok':'stale'}
+function confStatus(g,t,m){const c=t.confirms[m];if(t.plan&&!covers(t,m,g.start,g.end))return c?'conflict':'blocked';return !c?'pending':c===planSig(g,t)?'ok':'stale'}
 function planChanged(g,t,V,desc){if(!t.plan)return;t.plan.log=[nameOf(V)+' '+desc,...(t.plan.log||[])].slice(0,3);if(t.confirms[V])t.confirms[V]=planSig(g,t)}
 function guideTasks(){
   const g=S.groups.find(x=>x.id==='g1'),t=g&&S.trips.g1;if(!t)return [];
@@ -354,9 +355,10 @@ function renameIn(g,t,a,b){
   t.items.forEach(i=>{if(i.who)i.who=i.who.map(f)});t.exp.forEach(e=>{e.payer=f(e.payer);e.split=e.split.map(f)});
 }
 function inviteLink(g){
+  if(!S.uid){S.uid=Math.random().toString(36).slice(2,8);save()}
   const G=JSON.parse(JSON.stringify(g)),T=JSON.parse(JSON.stringify(ensureTrip(g)));
   if(G.members.includes(ME)){const nick=S.me.nick||'邀请人';T.mem[nick]={budget:S.me.budget,avail:S.me.avail.slice()};renameIn(G,T,ME,nick)}
-  return location.origin+location.pathname+'#join='+b64e({g:G,t:T});
+  return location.origin+location.pathname+'#join='+b64e({g:G,t:T,from:S.uid});
 }
 
 function vSquare(){
@@ -416,10 +418,10 @@ function renderList(){
 }
 
 function finalText(g,t){
-  const D=daysOf(g),c=costs(g,t),conf=g.members.filter(m=>t.confirms[m]);
+  const D=daysOf(g),c=costs(g,t),conf=g.members.filter(m=>confStatus(g,t,m)==='ok');
   const pcs=g.members.map(m=>personCost(g,t,m));
   let s=`【毕旅拼团 · 最终方案】${g.title}\n目的地：${DESTS[g.code][0]}（${g.code}）\n日期：${md(g.start)}–${md(g.end)}（${D}天${D-1}晚）\n成员：${g.members.map(nameOf).join('、')}（已确认 ${conf.length}/${g.members.length}）\n人均：${yuan(Math.min(...pcs))}–${yuan(Math.max(...pcs))}（必选 ${yuan(c.base)}，可选活动按需）\n`;
-  for(let d=1;d<=D;d++){const its=t.items.filter(i=>i.day===d);s+=`D${d} ${md(g.start+d-1)}：${its.length?its.map(i=>i.title+(i.opt?'（可选·'+(i.who||[]).length+'人）':'')+(i.cost?' '+yuan(i.cost):'')).join('；'):'自由活动'}\n`}
+  for(let d=1;d<=D;d++){const its=t.items.filter(i=>i.day===d&&inPlan(g,i));s+=`D${d} ${md(g.start+d-1)}：${its.length?its.map(i=>i.title+(i.opt?'（可选·'+(i.who||[]).length+'人）':'')+(i.cost?' '+yuan(i.cost):'')).join('；'):'自由活动'}\n`}
   return s.trim();
 }
 
@@ -498,8 +500,8 @@ function vTrip(){
       <div class="list">${g.members.map(m=>{const b=info(t,m).budget,pc=personCost(g,t,m),inOpt=t.items.some(i=>i.opt&&inPlan(g,i)&&(i.who||[]).includes(m));
         const st=pc<=b?['good','够用，余 '+yuan(b-pc)]:(pc-c.base<=0||b<c.base)?['bad','超出 '+yuan(pc-b)+'，必选已超预算']:['bad','超出 '+yuan(pc-b)+(inOpt?'，可退出可选活动':'')];
         return `<div class="li" style="padding:5px 0">${av(m)}<span class="grow">${esc(nameOf(m))}</span><span class="num mono small">${yuan(pc)} / ${yuan(b)}</span><span class="chip ${st[0]}">${st[1]}</span></div>`}).join('')}</div>
-      <div>${Array.from({length:D},(_,d)=>{const its=t.items.filter(i=>i.day===d+1);return `<div class="day">DAY ${d+1} · ${md(g.start+d)}</div><div class="list">${its.length?its.map(i=>itemRow(i,V)).join(''):'<div class="li muted small">还没安排</div>'}</div>`}).join('')}</div>
-      ${t.items.some(i=>!inPlan(g,i))?`<div class="overflow"><div class="small" style="color:var(--warn)">这些安排超出了当前 ${D} 天的日期，已不计入预算，可删除或改期：</div><div class="list">${t.items.filter(i=>!inPlan(g,i)).map(i=>itemRow(i,V,true)).join('')}</div></div>`:''}
+      <div>${Array.from({length:D},(_,d)=>{const its=t.items.filter(i=>i.day===d+1&&inPlan(g,i));return `<div class="day">DAY ${d+1} · ${md(g.start+d)}</div><div class="list">${its.length?its.map(i=>itemRow(i,V)).join(''):'<div class="li muted small">还没安排</div>'}</div>`}).join('')}</div>
+      ${t.items.some(i=>!inPlan(g,i))?`<div class="overflow"><div class="small" style="color:var(--warn)">这些安排不在当前方案内（超出 ${D} 天的日期，或属于其他目的地），已不计入预算和最终行程，可删除：</div><div class="list">${t.items.filter(i=>!inPlan(g,i)).map(i=>itemRow(i,V,true)).join('')}</div></div>`:''}
       <form class="inline" data-form="item">
         <label>天<select name="day">${Array.from({length:D},(_,d)=>`<option value="${d+1}">D${d+1}</option>`).join('')}</select></label>
         <label>类型<select name="type">${TYPES.map(x=>`<option>${x}</option>`).join('')}</select></label>
@@ -532,7 +534,7 @@ function vTrip(){
 }
 function itemRow(i,V,over){
   const who=i.who||[],inI=who.includes(V);
-  return `<div class="li"><span class="tag">${i.type}</span><span class="grow">${over?'<span class="muted small">D'+i.day+' </span>':''}${esc(i.title)}${i.opt?` <span class="chip sun">可选 · ${who.length}人参加</span>`:''}
+  return `<div class="li"><span class="tag">${i.type}</span><span class="grow">${over?'<span class="muted small">'+(i.dest&&DESTS[i.dest]?DESTS[i.dest][0]+' ':'')+'D'+i.day+' </span>':''}${esc(i.title)}${i.opt?` <span class="chip sun">可选 · ${who.length}人参加</span>`:''}
     ${i.opt?`<span class="avs" style="display:inline-flex;vertical-align:middle;margin-left:4px">${who.map(m=>av(m,1)).join('')}</span>`:''}</span>
     ${i.opt&&!over?`<button class="btn-sm ${inI?'':'btn-ink'}" data-act="optin" data-id="${i.id}">${inI?'不参加了':'我也参加'}</button>`:''}
     <span class="num mono">${yuan(i.cost)}</span><button class="x" data-act="delitem" data-id="${i.id}" aria-label="删除这项安排">×</button></div>`;
@@ -546,6 +548,8 @@ function vProposal(g,t,P,V,isOwner){
   if(P.cantGo.length)issues.push(['warn',`档期冲突：${P.cantGo.map(nameOf).join('、')} 在 ${md(P.s)}–${md(P.e)} 没空，确认后他们需要调整档期，否则无法同行。`]);
   if(P.over.length)issues.push(['warn',`预算不足：${P.over.map(m=>nameOf(m)+'（超 '+yuan(personCost(g,t,m)-info(t,m).budget)+'）').join('、')}。可退出可选活动或调整行程。`]);
   if(P.s!==g.start||P.e!==g.end)issues.push(['warn',`原计划 ${md(g.start)}–${md(g.end)} 不是全员都有空，方案已改用交集 ${md(P.s)}–${md(P.e)}。`]);
+  const moved=P.code&&P.code!==g.code?t.items.filter(i=>(i.dest||g.code)===g.code).length:0;
+  if(moved)issues.push(['warn',`目的地将从${DESTS[g.code][0]}改为${DESTS[P.code][0]}：现有 ${moved} 项${DESTS[g.code][0]}的行程会移出方案，确认后需要重新安排${DESTS[P.code][0]}的行程。`]);
   if(!issues.length)issues.push(['good','没有待解决的问题，可以定案。']);
   return `<section class="panel decide">
     <h2><span class="n">方案</span>待确认的旅行方案 <span class="muted small" style="font-weight:400">由投票和档期自动生成，团长确认后对全团生效</span></h2>
@@ -560,19 +564,21 @@ function vProposal(g,t,P,V,isOwner){
   </section>`;
 }
 function vPlan(g,t,V,isOwner){
-  const st=m=>confStatus(g,t,m),conf=g.members.filter(m=>st(m)==='ok'),stale=g.members.filter(m=>st(m)==='stale'),D=daysOf(g),pcs=g.members.map(m=>personCost(g,t,m));
+  const st=m=>confStatus(g,t,m),conf=g.members.filter(m=>st(m)==='ok'),stale=g.members.filter(m=>st(m)==='stale'),cfl=g.members.filter(m=>['conflict','blocked'].includes(st(m))),D=daysOf(g),pcs=g.members.map(m=>personCost(g,t,m));
   const log=t.plan.log||[];
   return `<section class="panel decide locked">
     <h2><span class="n">方案</span>最终方案 <span class="chip good">团长已确认</span><span class="chip ${conf.length===g.members.length?'good':'warn'}">${conf.length}/${g.members.length} 人确认参加</span></h2>
     ${log.length?`<div class="callout" style="background:var(--sunSoft)">确认后方案有改动：${log.map(esc).join('；')}。${stale.length?`<b style="color:var(--warn)">${stale.map(nameOf).join('、')}</b> 之前确认的是旧版本，需要重新确认。`:'受影响的成员都已重新确认。'}</div>`:''}
+    ${cfl.length?`<div class="callout" style="background:var(--sunSoft)"><b style="color:var(--bad)">${cfl.map(nameOf).join('、')}</b> 的档期与方案日期 ${md(g.start)}–${md(g.end)} 冲突，暂时无法确认参加，已有的确认也随之失效。请更新档期，或由团长重新讨论日期。</div>`:''}
+    ${t.items.some(i=>inPlan(g,i))?'':`<div class="callout" style="background:var(--sunSoft)">${DESTS[g.code][0]}还没有行程安排，请在「行程与预算」里安排后再请大家确认。</div>`}
     <div class="prop">
       <div><b>${g.code} ${DESTS[g.code][0]}</b><span>目的地</span></div>
       <div><b>${md(g.start)}–${md(g.end)}</b><span>日期 · ${D}天${D-1}晚</span></div>
       <div><b>${yuan(Math.min(...pcs))}–${yuan(Math.max(...pcs))}</b><span>人均</span></div>
     </div>
     <div class="list">${g.members.map(m=>{const s=st(m),cf=!covers(t,m,g.start,g.end),pc=personCost(g,t,m),ob=pc>info(t,m).budget;
-      const lab={ok:['good','已确认'],stale:['bad','方案有变，需重新确认'],pending:['warn','待确认']}[s];
-      return `<div class="li" style="padding:5px 0">${av(m)}<span class="grow">${esc(nameOf(m))}${m===g.owner?' <span class="muted small">团长</span>':''}</span>${cf?'<span class="chip bad">档期冲突</span>':''}${ob?'<span class="chip bad">超预算</span>':''}<span class="chip ${lab[0]}">${lab[1]}</span>${m===V?`<button class="btn-sm ${s==='ok'?'':'btn-sun'}" data-act="conf">${s==='ok'?'取消确认':s==='stale'?'确认新方案':'确认参加'}</button>`:''}</div>`}).join('')}</div>
+      const lab={ok:['good','已确认'],stale:['bad','方案有变，需重新确认'],pending:['warn','待确认'],conflict:['bad','档期冲突，确认已失效'],blocked:['bad','档期冲突，暂不能确认']}[s];
+      return `<div class="li" style="padding:5px 0">${av(m)}<span class="grow">${esc(nameOf(m))}${m===g.owner?' <span class="muted small">团长</span>':''}</span>${ob?'<span class="chip bad">超预算</span>':''}<span class="chip ${lab[0]}">${lab[1]}</span>${m===V?(cf?'<button class="btn-sm" disabled>先更新档期</button>':`<button class="btn-sm ${s==='ok'?'':'btn-sun'}" data-act="conf">${s==='ok'?'取消确认':s==='stale'?'确认新方案':'确认参加'}</button>`):''}</div>`}).join('')}</div>
     <div class="row"><button class="btn-ink" data-act="copyplan">复制最终行程到同学群</button>${isOwner?'<button data-act="reopen">重新讨论（解锁投票）</button>':''}</div>
   </section>`;
 }
@@ -664,10 +670,10 @@ document.addEventListener('click',e=>{
   else if(a==='as'){S.as=b.dataset.k;toast('已切换为「'+nameOf(S.as)+'」的视角');render()}
   else if(a==='vote'){if(t.plan)return;t.votes[V]=b.dataset.k;t.pick=null;render()}
   else if(a==='pick'){t.pick=b.dataset.k;render()}
-  else if(a==='confirmplan'){const P=proposal(g,t);if(!P.code||V!==g.owner)return;const changed=t.everPlanned&&(g.code!==P.code||g.start!==P.s||g.end!==P.e);g.code=P.code;g.start=P.s;g.end=P.e;t.plan={at:Date.now(),log:changed?[nameOf(V)+' 把方案改为 '+DESTS[P.code][0]+' '+md(P.s)+'–'+md(P.e)]:[]};t.everPlanned=true;t.confirms[g.owner]=planSig(g,t);
+  else if(a==='confirmplan'){const P=proposal(g,t);if(!P.code||V!==g.owner)return;const changed=t.everPlanned&&(g.code!==P.code||g.start!==P.s||g.end!==P.e);if(P.code!==g.code){const o=DESTS[g.code][0],nw=DESTS[P.code][0];g.title=g.title.split(o).join(nw);g.desc=`原计划去${o}，投票改为${nw}，行程需要重新安排。`}g.code=P.code;g.start=P.s;g.end=P.e;t.plan={at:Date.now(),log:changed?[nameOf(V)+' 把方案改为 '+DESTS[P.code][0]+' '+md(P.s)+'–'+md(P.e)]:[]};t.everPlanned=true;t.confirms[g.owner]=planSig(g,t);
     const stale=g.members.filter(m=>confStatus(g,t,m)==='stale');toast(stale.length?'方案已确认，'+stale.length+' 人需重新确认':'方案已确认，等待成员确认参加');render()}
   else if(a==='reopen'){t.plan=null;toast('已解锁，可以重新投票和调整；改动后成员需重新确认');render()}
-  else if(a==='conf'){if(confStatus(g,t,V)==='ok')delete t.confirms[V];else t.confirms[V]=planSig(g,t);render()}
+  else if(a==='conf'){const s=confStatus(g,t,V);if(s==='conflict'||s==='blocked'){toast('你的档期与方案日期冲突，请先更新档期');return}if(s==='ok')delete t.confirms[V];else t.confirms[V]=planSig(g,t);render()}
   else if(a==='optin'){const it=t.items.find(i=>i.id===b.dataset.id);if(!it)return;it.who=it.who||[];it.who=it.who.includes(V)?it.who.filter(m=>m!==V):[...it.who,V];S.touchedOpt=true;render()}
   else if(a==='delitem'){const it=t.items.find(i=>i.id===b.dataset.id);if(!it)return;const was=inPlan(g,it);t.items=t.items.filter(i=>i.id!==it.id);if(was)planChanged(g,t,V,'删除了「'+it.title+'」');toast('已删除');render()}
   else if(a==='delexp'){t.exp=t.exp.filter(x=>x.id!==b.dataset.id);toast('已删除这笔账');render()}
@@ -689,7 +695,7 @@ document.addEventListener('submit',e=>{
   if(k==='cand'){const v=fd.get('k');if(v&&!t.cands.includes(v))t.cands.push(v)}
   else if(k==='myinfo'){const r=readRange(fd),bud=+fd.get('budget');if(!r||!bud){toast('请填写预算和日期');return}
     if(V===ME){S.me.budget=bud;S.me.avail=r}else{t.mem[V]={budget:bud,avail:r}}toast('已更新，方案和预算已重算')}
-  else if(k==='item'){const opt=!!fd.get('opt');const title=fd.get('title').trim();t.items.push({id:nid('i'),day:+fd.get('day'),type:fd.get('type'),title,cost:Math.max(0,Math.round((+fd.get('cost')||0)*100)/100),opt,who:opt?[V]:undefined});planChanged(g,t,V,'新增了「'+title+'」');toast(t.plan?'已加入行程，其他成员需重新确认':'已加入行程')}
+  else if(k==='item'){const opt=!!fd.get('opt');const title=fd.get('title').trim();t.items.push({id:nid('i'),day:+fd.get('day'),dest:g.code,type:fd.get('type'),title,cost:Math.max(0,Math.round((+fd.get('cost')||0)*100)/100),opt,who:opt?[V]:undefined});planChanged(g,t,V,'新增了「'+title+'」');toast(t.plan?'已加入行程，其他成员需重新确认':'已加入行程')}
   else if(k==='exp'){const split=fd.getAll('split'),amt=Math.round((+fd.get('amt')||0)*100)/100;if(!split.length){toast('至少选一个人分摊');return}if(amt<=0){toast('请输入金额');return}
     t.exp.push({id:nid('e'),title:fd.get('title').trim(),amt,payer:fd.get('payer'),split});toast('已记账，转账方案已更新')}
   else if(k==='me'){const r=readRange(fd);S.me={nick:fd.get('nick').trim(),budget:+fd.get('budget')||S.me.budget,avail:r||S.me.avail,pace:fd.get('pace'),tags:fd.getAll('tags')};toast('已保存，匹配度已更新');go('square');return}
@@ -698,16 +704,16 @@ document.addEventListener('submit',e=>{
     const ng={id:'g'+Date.now().toString(36),title:fd.get('title').trim(),code:fd.get('code'),start:s,end:en,bmin,bmax,cap:clamp(+fd.get('cap')||6,2,20),pace:fd.get('pace'),tags:S.me.tags.slice(0,3),owner:ME,members:[ME],desc:fd.get('desc').trim()};
     S.groups.unshift(ng);S.mine.push(ng.id);S.current=ng.id;S.as=ME;ensureTrip(ng);document.getElementById('modal').hidden=true;toast('团已发起，复制邀请链接拉同学进来吧');go('trip');return}
   else if(k==='joinlink'&&pendingJoin){const r=readRange(fd);S.me.nick=fd.get('nick').trim();S.me.budget=+fd.get('budget')||S.me.budget;if(r)S.me.avail=r;
-    const {g:G,t:T}=pendingJoin;pendingJoin=null;
-    const ex=S.groups.find(x=>x.id===G.id);
-    if(ex){if(!ex.members.includes(ME)&&ex.members.length<ex.cap)ex.members.push(ME)}
-    else{if(!G.members.includes(ME))G.members.push(ME);S.groups.unshift(G);S.trips[G.id]=T;ensureTrip(G)}
+    const {g:G,t:T,from}=pendingJoin;pendingJoin=null;
+    G.id=G.id+'_'+(from||'x');S.groups=S.groups.filter(x=>x.id!==G.id);S.mine=S.mine.filter(x=>x!==G.id);
+    if(!G.members.includes(ME)){if(G.members.length>=G.cap){document.getElementById('modal').hidden=true;toast('这个团已满员');return}G.members.push(ME)}
+    S.groups.unshift(G);S.trips[G.id]=T;ensureTrip(G);
     if(!S.mine.includes(G.id))S.mine.push(G.id);S.current=G.id;S.as=ME;document.getElementById('modal').hidden=true;toast('已加入「'+G.title+'」');go('trip');return}
   render();
 });
 
 const h0=(location.hash||'').slice(1);
-if(h0.startsWith('join=')){try{const d=b64d(h0.slice(5));ui.tab='square';render();openJoin(d)}catch(err){render();toast('邀请链接无法识别')}try{history.replaceState(null,'',location.pathname)}catch(err){}}
+if(h0.startsWith('join=')){try{const d=b64d(h0.slice(5));ui.tab='square';render();if(d.from&&d.from===S.uid)toast('这是你自己发出的邀请链接');else openJoin(d)}catch(err){render();toast('邀请链接无法识别')}try{history.replaceState(null,'',location.pathname)}catch(err){}}
 else{if(['square','trip','me'].includes(h0))ui.tab=h0;render()}
 </script>
 
